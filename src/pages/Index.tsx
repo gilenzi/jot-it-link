@@ -1,17 +1,14 @@
-import React, {useState, useRef} from 'react';
-import {Plus, Share2, Image as ImageIcon, X} from 'lucide-react';
-import {Button} from '@/components/ui/button';
-import {Card, CardContent} from '@/components/ui/card';
-import {Textarea} from '@/components/ui/textarea';
-import {useToast} from '@/hooks/use-toast';
 
-interface Note {
-  id: string;
-  content: string;
-  image?: string;
-  createdAt: Date;
-  color: string;
-}
+import React, { useState, useRef, useEffect } from 'react';
+import { Plus, Share2, Image as ImageIcon, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
+import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
+import type { Tables } from '@/integrations/supabase/types';
+
+type Note = Tables<'notes'>;
 
 const Index = () => {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -19,8 +16,9 @@ const Index = () => {
   const [newNoteContent, setNewNoteContent] = useState('');
   const [newNoteImage, setNewNoteImage] = useState<string | null>(null);
   const [selectedColor, setSelectedColor] = useState('#fef3c7');
+  const [isLoading, setIsLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const {toast} = useToast();
+  const { toast } = useToast();
 
   const colors = [
     '#fef3c7', // yellow
@@ -33,9 +31,61 @@ const Index = () => {
     '#f0fdfa', // teal
   ];
 
-  const generateId = () => Math.random().toString(36).substr(2, 9);
+  // Load notes on component mount
+  useEffect(() => {
+    loadNotes();
+  }, []);
 
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const loadNotes = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('notes')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setNotes(data || []);
+    } catch (error) {
+      console.error('Error loading notes:', error);
+      toast({
+        title: 'Error loading notes',
+        description: 'Failed to load notes from the database',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const uploadImage = async (file: File): Promise<string | null> => {
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Date.now()}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('note-images')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage
+        .from('note-images')
+        .getPublicUrl(filePath);
+
+      return data.publicUrl;
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      toast({
+        title: 'Upload failed',
+        description: 'Failed to upload image',
+        variant: 'destructive',
+      });
+      return null;
+    }
+  };
+
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
       if (file.size > 5 * 1024 * 1024) {
@@ -80,27 +130,48 @@ const Index = () => {
     }
   };
 
-  const createNote = () => {
+  const createNote = async () => {
     if (!newNoteContent.trim() && !newNoteImage) return;
 
-    const newNote: Note = {
-      id: generateId(),
-      content: newNoteContent,
-      image: newNoteImage || undefined,
-      createdAt: new Date(),
-      color: selectedColor,
-    };
+    try {
+      let imageUrl = null;
 
-    setNotes([newNote, ...notes]);
-    setNewNoteContent('');
-    setNewNoteImage(null);
-    setSelectedColor('#fef3c7');
-    setIsCreating(false);
+      // Upload image if present
+      if (newNoteImage && fileInputRef.current?.files?.[0]) {
+        imageUrl = await uploadImage(fileInputRef.current.files[0]);
+        if (!imageUrl) return; // Upload failed
+      }
 
-    toast({
-      title: 'Note created!',
-      description: 'Your note has been saved successfully.',
-    });
+      const { data, error } = await supabase
+        .from('notes')
+        .insert({
+          content: newNoteContent || null,
+          image_url: imageUrl,
+          color: selectedColor,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setNotes([data, ...notes]);
+      setNewNoteContent('');
+      setNewNoteImage(null);
+      setSelectedColor('#fef3c7');
+      setIsCreating(false);
+
+      toast({
+        title: 'Note created!',
+        description: 'Your note has been saved successfully.',
+      });
+    } catch (error) {
+      console.error('Error creating note:', error);
+      toast({
+        title: 'Error creating note',
+        description: 'Failed to save note to the database',
+        variant: 'destructive',
+      });
+    }
   };
 
   const shareNote = (noteId: string) => {
@@ -112,13 +183,40 @@ const Index = () => {
     });
   };
 
-  const deleteNote = (noteId: string) => {
-    setNotes(notes.filter((note) => note.id !== noteId));
-    toast({
-      title: 'Note deleted',
-      description: 'Your note has been removed.',
-    });
+  const deleteNote = async (noteId: string) => {
+    try {
+      const { error } = await supabase
+        .from('notes')
+        .delete()
+        .eq('id', noteId);
+
+      if (error) throw error;
+
+      setNotes(notes.filter((note) => note.id !== noteId));
+      toast({
+        title: 'Note deleted',
+        description: 'Your note has been removed.',
+      });
+    } catch (error) {
+      console.error('Error deleting note:', error);
+      toast({
+        title: 'Error deleting note',
+        description: 'Failed to delete note from the database',
+        variant: 'destructive',
+      });
+    }
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-amber-500 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading your notes...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
@@ -146,7 +244,7 @@ const Index = () => {
           ) : (
             <Card
               className="shadow-lg border-0"
-              style={{backgroundColor: selectedColor}}
+              style={{ backgroundColor: selectedColor }}
             >
               <CardContent className="p-6">
                 <Textarea
@@ -211,7 +309,7 @@ const Index = () => {
                           ? 'border-gray-800 scale-110'
                           : 'border-gray-300'
                       }`}
-                      style={{backgroundColor: color}}
+                      style={{ backgroundColor: color }}
                       onClick={() => setSelectedColor(color)}
                     />
                   ))}
@@ -250,12 +348,12 @@ const Index = () => {
               <Card
                 key={note.id}
                 className="group hover:shadow-lg transition-all duration-200 border-0 hover:scale-105"
-                style={{backgroundColor: note.color}}
+                style={{ backgroundColor: note.color }}
               >
                 <CardContent className="p-4">
-                  {note.image && (
+                  {note.image_url && (
                     <img
-                      src={note.image}
+                      src={note.image_url}
                       alt="Note"
                       className="w-full h-32 object-cover rounded-lg mb-3"
                     />
@@ -268,7 +366,7 @@ const Index = () => {
                   )}
 
                   <div className="flex justify-between items-center text-xs text-gray-500 mb-3">
-                    <span>{note.createdAt.toLocaleDateString()}</span>
+                    <span>{new Date(note.created_at).toLocaleDateString()}</span>
                   </div>
 
                   <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
