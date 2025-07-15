@@ -1,11 +1,13 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, Share2, Image as ImageIcon, X } from 'lucide-react';
+import { Plus, Share2, Image as ImageIcon, X, LogOut, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/hooks/useAuth';
+import { useNavigate } from 'react-router-dom';
 import type { Tables } from '@/integrations/supabase/types';
 
 type Note = Tables<'notes'>;
@@ -19,6 +21,8 @@ const Index = () => {
   const [isLoading, setIsLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+  const { user, isLoading: authLoading, signOut } = useAuth();
+  const navigate = useNavigate();
 
   const colors = [
     '#fef3c7', // yellow
@@ -31,19 +35,37 @@ const Index = () => {
     '#f0fdfa', // teal
   ];
 
-  // Load notes on component mount
+  // Redirect to auth if not logged in
   useEffect(() => {
-    loadNotes();
-  }, []);
+    if (!authLoading && !user) {
+      navigate('/auth');
+    }
+  }, [user, authLoading, navigate]);
+
+  // Load notes when user is authenticated
+  useEffect(() => {
+    if (user) {
+      loadNotes();
+    }
+  }, [user]);
 
   const loadNotes = async () => {
+    if (!user) return;
+
     try {
+      console.log('Loading notes for user:', user.id);
       const { data, error } = await supabase
         .from('notes')
         .select('*')
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error loading notes:', error);
+        throw error;
+      }
+
+      console.log('Loaded notes:', data);
       setNotes(data || []);
     } catch (error) {
       console.error('Error loading notes:', error);
@@ -132,6 +154,7 @@ const Index = () => {
 
   const createNote = async () => {
     if (!newNoteContent.trim() && !newNoteImage) return;
+    if (!user) return;
 
     try {
       let imageUrl = null;
@@ -142,18 +165,24 @@ const Index = () => {
         if (!imageUrl) return; // Upload failed
       }
 
+      console.log('Creating note for user:', user.id);
       const { data, error } = await supabase
         .from('notes')
         .insert({
           content: newNoteContent || null,
           image_url: imageUrl,
           color: selectedColor,
+          user_id: user.id,
         })
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error creating note:', error);
+        throw error;
+      }
 
+      console.log('Created note:', data);
       setNotes([data, ...notes]);
       setNewNoteContent('');
       setNewNoteImage(null);
@@ -207,7 +236,12 @@ const Index = () => {
     }
   };
 
-  if (isLoading) {
+  const handleSignOut = async () => {
+    await signOut();
+    navigate('/auth');
+  };
+
+  if (authLoading || isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50 flex items-center justify-center">
         <div className="text-center">
@@ -218,11 +252,30 @@ const Index = () => {
     );
   }
 
+  if (!user) {
+    return null; // Will redirect to auth
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-orange-50">
       <div className="container mx-auto px-4 py-8 max-w-6xl">
-        {/* Header */}
+        {/* Header with user info */}
         <div className="text-center mb-8">
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex items-center gap-2 text-gray-600">
+              <User className="w-4 h-4" />
+              <span className="text-sm">{user.email}</span>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleSignOut}
+              className="text-gray-600 hover:text-gray-800"
+            >
+              <LogOut className="w-4 h-4 mr-2" />
+              Sign Out
+            </Button>
+          </div>
           <h1 className="text-4xl font-bold text-gray-800 mb-2">Notes</h1>
           <p className="text-gray-600">
             Capture your thoughts, add images, and share with others
